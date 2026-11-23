@@ -1,0 +1,100 @@
+# DomainFolio Marketplace — modular monolith (Option B)
+#
+# Built ALONGSIDE the existing lander app (spencerawlson/domainfolio).
+# The lander stays live and untouched; this repo is the new marketplace.
+# No deploy, no paid accounts, no real money — until Spencer approves
+# each of those steps separately.
+#
+# Status: Phase 1 skeleton (docs + shells + health endpoints).
+# See docs/DOMAINFOLIO_MASTER_PLAN.md for the P0/P1/P2 stages.
+
+name: domainfolio-marketplace
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: domainfolio
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-domainfolio}
+      POSTGRES_DB: domainfolio
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U domainfolio -d domainfolio"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  meilisearch:
+    image: getmeili/meilisearch:v1.15
+    environment:
+      MEILI_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:-dev-master-key-change-me}
+      MEILI_NO_ANALYTICS: "true"
+    ports:
+      - "127.0.0.1:7700:7700"
+    volumes:
+      - msdata:/meili_data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:7700/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: ./apps/api
+    environment:
+      DATABASE_URL: postgresql+psycopg://domainfolio:${POSTGRES_PASSWORD:-domainfolio}@db:5432/domainfolio
+      REDIS_URL: redis://redis:6379/0
+      MEILISEARCH_URL: http://meilisearch:7700
+      MEILISEARCH_MASTER_KEY: ${MEILISEARCH_MASTER_KEY:-dev-master-key-change-me}
+      JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
+      SESSION_SECRET: ${SESSION_SECRET:-dev-only-change-me}
+      ESCROW_PROVIDER: stub
+      STRIPE_CONNECT_ENABLED: "false"
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      meilisearch:
+        condition: service_healthy
+    # Migrations run as a separate one-shot in CI / deploy, never
+    # implicitly at container start (see docs/DEPLOYMENT_GUIDE.md,
+    # written in a later stage).
+
+  worker:
+    build: ./apps/api
+    command: celery -A app.workers.celery_app.celery_app worker --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+psycopg://domainfolio:${POSTGRES_PASSWORD:-domainfolio}@db:5432/domainfolio
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  web:
+    build: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  msdata:
